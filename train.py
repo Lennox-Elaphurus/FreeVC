@@ -34,7 +34,7 @@ from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 
 torch.backends.cudnn.benchmark = True
 global_step = 0
-#os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO'
+# os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO'
 
 
 def main():
@@ -151,8 +151,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
           hps.data.mel_fmax) # convert spectrom to mel spectrogram
 
     with autocast(enabled=hps.train.fp16_run):
+      # Generator
       y_hat, ids_slice, z_mask,\
-      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c, spec, g=g, mel=mel) # forward, get all outputs before decoder
+      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c, spec, g=g, mel=mel, multi_samples = True) # forward, get all outputs before decoder
       # c: audio, spec: spectrogram, g: speaker embedding, mel: mel spectrogram
       # z_p: high-dim normal distribution, should only contain content information
       # m_p: prior mean, logs_p: prior log of standard deviation
@@ -183,7 +184,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     scaler.step(optim_d)
 
     with autocast(enabled=hps.train.fp16_run):
-      # Generator
+      # Discriminator
       y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
       with autocast(enabled=False):
         # F1 distance between real and generated mel-spectrogram, multiplied by a factor

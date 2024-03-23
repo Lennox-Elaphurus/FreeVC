@@ -70,7 +70,7 @@ class Encoder(nn.Module):
     
     self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-  def forward(self, x, x_lengths, g=None):
+  def forward(self, x, x_lengths, g=None, multi_samples = False):
     x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
     x = self.pre(x) * x_mask
     x = self.enc(x, x_mask, g=g)
@@ -79,8 +79,16 @@ class Encoder(nn.Module):
     
     # m plus a random tensor (sampled from standard normal distribution, with the same size as m), scaled by the exponential of logs to m
     # z is a single sample of the multi-dim normal distribution, with mean m and sigma exp(logs)
-    z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask # Is here lack of a constent before mask?
-    
+    # print("m.shape", m.shape)
+    # print("logs.shape", logs.shape)
+    if not multi_samples:
+        z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask # Is here lack of a constent before mask?
+    else:
+        z = [(m + torch.randn_like(m) * torch.exp(logs)) * x_mask for _ in range(16)]
+        z = torch.stack(z) # convert list to tensor
+        # z [16, b, h, t_t]
+        
+    # print("z.shape",z.shape)
     return z, m, logs, x_mask # sampled multi-dim mormal distribution, mean, log of sigma, mask
 
 
@@ -325,7 +333,7 @@ class SynthesizerTrn(nn.Module):
     if not self.use_spk:
       self.enc_spk = SpeakerEncoder(model_hidden_size=gin_channels, model_embedding_size=gin_channels)
 
-  def forward(self, c, spec, g=None, mel=None, c_lengths=None, spec_lengths=None):
+  def forward(self, c, spec, g=None, mel=None, c_lengths=None, spec_lengths=None, multi_samples = False):
     if c_lengths == None:
       c_lengths = (torch.ones(c.size(0)) * c.size(-1)).to(c.device)
     if spec_lengths == None:
@@ -339,7 +347,7 @@ class SynthesizerTrn(nn.Module):
     _, m_p, logs_p, _ = self.enc_p(c, c_lengths) 
 
     # Posterior Encoder, getting sampled high-dim normal distribution, mean, log of sigma and mask
-    z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g) # Posterior Encoder, using linear spectrogram and speaker embedding
+    z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g, multi_samples = multi_samples) # Posterior Encoder, using linear spectrogram and speaker embedding
     z_p = self.flow(z, spec_mask, g=g) # Flow, get z^prime, a multi-dim normal distribution,should with contain content
 
     z_slice, ids_slice = commons.rand_slice_segments(z, spec_lengths, self.segment_size)
