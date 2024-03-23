@@ -84,11 +84,11 @@ class Encoder(nn.Module):
     if not multi_samples:
         z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask # Is here lack of a constent before mask?
     else:
-        z = [(m + torch.randn_like(m) * torch.exp(logs)) * x_mask for _ in range(16)]
+        z = [(m + torch.randn_like(m) * torch.exp(logs)) * x_mask for _ in range(32)]
         z = torch.stack(z) # convert list to tensor
-        # z [16, b, h, t_t]
-        
-    # print("z.shape",z.shape)
+        # z [32, batch_size, hidden dimension, t_t]
+
+    # print("z.shape in Encoder",z.shape)
     return z, m, logs, x_mask # sampled multi-dim mormal distribution, mean, log of sigma, mask
 
 
@@ -348,9 +348,18 @@ class SynthesizerTrn(nn.Module):
 
     # Posterior Encoder, getting sampled high-dim normal distribution, mean, log of sigma and mask
     z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g, multi_samples = multi_samples) # Posterior Encoder, using linear spectrogram and speaker embedding
-    z_p = self.flow(z, spec_mask, g=g) # Flow, get z^prime, a multi-dim normal distribution,should with contain content
-
-    z_slice, ids_slice = commons.rand_slice_segments(z, spec_lengths, self.segment_size)
+    if not multi_samples:
+        z_p = self.flow(z, spec_mask, g=g) # Flow, get z^prime, a multi-dim normal distribution,should with contain content
+        
+    else:
+        z_p = [self.flow(z[i], spec_mask, g=g) for i in range(32)]
+        z_p = torch.stack(z_p) # convert list to tensor
+        # z_p [32, batch_size, hidden dimension, t_t]
+    
+    if not multi_samples:
+        z_slice, ids_slice = commons.rand_slice_segments(z, spec_lengths, self.segment_size)
+    else:
+        z_slice, ids_slice = commons.rand_slice_segments(z[0].to(c.device), spec_lengths, self.segment_size)
     o = self.dec(z_slice, g=g) # Decoder
     
     return o, ids_slice, spec_mask, (z, z_p, m_p, logs_p, m_q, logs_q)

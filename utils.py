@@ -16,7 +16,7 @@ from wavlm import WavLM, WavLMConfig
 
 MATPLOTLIB_FLAG = False
 
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream=sys.stdout, level=logging.WARNING) # logging.DEBUG
 logger = logging
 
 

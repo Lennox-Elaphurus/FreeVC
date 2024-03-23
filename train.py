@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import argparse
@@ -12,6 +13,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast, GradScaler
+from tqdm import tqdm
 
 import commons
 import utils
@@ -34,7 +36,7 @@ from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 
 torch.backends.cudnn.benchmark = True
 global_step = 0
-# os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO'
+# os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO
 
 
 def main():
@@ -46,7 +48,8 @@ def main():
   os.environ['MASTER_ADDR'] = 'localhost'
   os.environ['MASTER_PORT'] = hps.train.port
 
-  mp.spawn(run, nprocs=n_gpus, args=(n_gpus, hps,))
+  # mp.spawn(run, nprocs=n_gpus, args=(n_gpus, hps,))
+  run(0, 1, hps)
 
 
 def run(rank, n_gpus, hps):
@@ -58,7 +61,7 @@ def run(rank, n_gpus, hps):
     writer = SummaryWriter(log_dir=hps.model_dir)
     writer_eval = SummaryWriter(log_dir=os.path.join(hps.model_dir, "eval"))
 
-  dist.init_process_group(backend='nccl', init_method='env://', world_size=n_gpus, rank=rank)
+  # dist.init_process_group(backend='nccl', init_method='env://', world_size=n_gpus, rank=rank)
   torch.manual_seed(hps.train.seed)
   torch.cuda.set_device(rank)
 
@@ -83,25 +86,32 @@ def run(rank, n_gpus, hps):
       hps.data.filter_length // 2 + 1,
       hps.train.segment_size // hps.data.hop_length,
       **hps.model).cuda(rank)
-  net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
   optim_g = torch.optim.AdamW(
       net_g.parameters(), 
       hps.train.learning_rate, 
       betas=hps.train.betas, 
       eps=hps.train.eps)
+  
+  net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
   optim_d = torch.optim.AdamW(
       net_d.parameters(),
       hps.train.learning_rate, 
       betas=hps.train.betas, 
       eps=hps.train.eps)
-  net_g = DDP(net_g, device_ids=[rank])#, find_unused_parameters=True)
-  net_d = DDP(net_d, device_ids=[rank])
+  
+  # net_g = DDP(net_g, device_ids=[rank])#, find_unused_parameters=True)
+  # net_d = DDP(net_d, device_ids=[rank])
 
   try:
-    _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g)
-    _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "D_*.pth"), net_d, optim_d)
+    _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path("./checkpoints/training", "G_*.pth"), net_g, optim_g)
+    _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path("./checkpoints/training", "D_*.pth"), net_d, optim_d)
     global_step = (epoch_str - 1) * len(train_loader)
   except:
+    # Loading pretrained Generator model
+    utils.load_checkpoint("checkpoints/freevc.pth", net_g, optim_g, True)
+    
+    # Loading pretrained Discriminator model
+    utils.load_checkpoint("checkpoints/D-freevc.pth", net_d, optim_d, True)
     epoch_str = 1
     global_step = 0
 
@@ -133,7 +143,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
   net_g.train()
   net_d.train()
-  for batch_idx, items in enumerate(train_loader):
+  for batch_idx, items in tqdm(enumerate(train_loader)):
     if hps.model.use_spk:
       c, spec, y, spk = items
       g = spk.cuda(rank, non_blocking=True)
@@ -153,11 +163,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     with autocast(enabled=hps.train.fp16_run):
       # Generator
       y_hat, ids_slice, z_mask,\
-      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c, spec, g=g, mel=mel, multi_samples = True) # forward, get all outputs before decoder
+      (_, z_p, m_p, logs_p, _ , _) = net_g(c, spec, g=g, mel=mel, multi_samples = True) # forward, get all outputs before decoder
+      #(z, z_p, m_p, logs_p, m_q, logs_q)
       # c: audio, spec: spectrogram, g: speaker embedding, mel: mel spectrogram
       # z_p: high-dim normal distribution, should only contain content information
       # m_p: prior mean, logs_p: prior log of standard deviation
       # m_q: posterior mean, logs_q: posterior log of standard deviation
+      # print("Got net_g: z_p, logs_q, m_p, logs_p, z_mask")
 
       y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
       y_hat_mel = mel_spectrogram_torch(
@@ -174,6 +186,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
       # Discriminator
       y_d_hat_r, y_d_hat_g, _, _ = net_d(y, y_hat.detach())
+      # print("Got net_d: y_d_hat_r, y_d_hat_g")
       with autocast(enabled=False):
         loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g)
         loss_disc_all = loss_disc
@@ -182,13 +195,16 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     scaler.unscale_(optim_d)
     grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
     scaler.step(optim_d)
+    # print("Updated optim_d")
 
     with autocast(enabled=hps.train.fp16_run):
       # Discriminator
       y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
+      # print("Got net_d: y_d_hat_r, y_d_hat_g, fmap_r, fmap_g")
       with autocast(enabled=False):
         # F1 distance between real and generated mel-spectrogram, multiplied by a factor
         loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
+        # print("Got loss_mel")
 
         # KL divergence between prior and posterior, measure the difference bewteen z' and mu_p, logs_p
         # prior: mean = m_p, log variance = logs_p
@@ -196,10 +212,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         # z_p: high-dim normal distribution, should only contain content information
         # m_p: prior mean, logs_p: prior log of standard deviation
         # m_q: posterior mean, logs_q: posterior log of standard deviation
-        loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
+        loss_kl = kl_loss(z_p, m_p, logs_p, z_mask) * hps.train.c_kl
+        # print("Got loss_kl")
 
         loss_fm = feature_loss(fmap_r, fmap_g)
+        # print("Got loss_fm")
         loss_gen, losses_gen = generator_loss(y_d_hat_g)
+        # print("Got loss_gen")
         # add loss here
         loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
     optim_g.zero_grad()
@@ -208,6 +227,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
     scaler.step(optim_g)
     scaler.update()
+    # print("Updated optim_g")
 
     if rank==0:
       if global_step % hps.train.log_interval == 0:
@@ -238,8 +258,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
       if global_step % hps.train.eval_interval == 0:
         evaluate(hps, net_g, eval_loader, writer_eval)
-        utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(global_step)))
-        utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(global_step)))
+        if not os.path.exists("./checkpoints/training"):
+          os.makedirs("./checkpoints/training")
+        utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join("./checkpoints/training", "G_{}.pth".format(global_step)))
+        utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join("./checkpoints/training", "D_{}.pth".format(global_step)))
     global_step += 1
   
   if rank == 0:
@@ -266,7 +288,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
         hps.data.sampling_rate,
         hps.data.mel_fmin, 
         hps.data.mel_fmax)
-      y_hat = generator.module.infer(c, g=g, mel=mel)
+      y_hat = generator.infer(c, g=g, mel=mel)
       
       y_hat_mel = mel_spectrogram_torch(
         y_hat.squeeze(1).float(),

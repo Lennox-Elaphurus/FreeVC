@@ -11,8 +11,6 @@ from models import SynthesizerTrn
 from mel_processing import mel_spectrogram_torch
 from wavlm import WavLM, WavLMConfig
 from speaker_encoder.voice_encoder import SpeakerEncoder
-import logging
-logging.getLogger('numba').setLevel(logging.WARNING)
 
 
 if __name__ == "__main__":
