@@ -60,7 +60,7 @@ def kl_divergence(mu_p, logvar_p, mu_q, logvar_q):
     var_p = torch.exp(logvar_p)
     var_q = torch.exp(logvar_q)
     
-    kl_div = 0.5 * torch.sum((var_p / var_q + (mu_q - mu_p)**2 / var_q - 1 - logvar_p + logvar_q), dim=1)
+    kl_div = 0.5 * torch.sum((var_p / var_q + (mu_q - mu_p)**2 / var_q - 1 - logvar_p + logvar_q), dim=[1,2])
     
     return kl_div
 
