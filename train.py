@@ -34,6 +34,25 @@ from losses import (
 )
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 
+class StepLR:
+    def __init__(self, optimizer,total_steps=0, step_size=25, gamma=0.1):
+        self.optimizer = optimizer
+        self.step_size = step_size
+        self.gamma = gamma
+        self.total_steps = total_steps
+
+    def step(self):
+        # Increment the total steps count
+        self.total_steps += 1
+        
+        if self.total_steps % self.step_size == 0:
+            # Update learning rate
+            for param_group in self.optimizer.param_groups:
+                if param_group['lr'] > 1e-6:
+                  param_group['lr'] *= self.gamma
+  
+        # print("Learning rate: ", self.optimizer.param_groups[0]['lr'])
+
 torch.backends.cudnn.benchmark = True
 global_step = 0
 # os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO
@@ -86,37 +105,54 @@ def run(rank, n_gpus, hps):
       hps.data.filter_length // 2 + 1,
       hps.train.segment_size // hps.data.hop_length,
       **hps.model).cuda(rank)
-  optim_g = torch.optim.AdamW(
-      net_g.parameters(), 
-      hps.train.learning_rate, 
-      betas=hps.train.betas, 
-      eps=hps.train.eps)
-  
   net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
-  optim_d = torch.optim.AdamW(
-      net_d.parameters(),
-      hps.train.learning_rate, 
-      betas=hps.train.betas, 
-      eps=hps.train.eps)
-  
+
   # net_g = DDP(net_g, device_ids=[rank])#, find_unused_parameters=True)
   # net_d = DDP(net_d, device_ids=[rank])
 
   try:
-    _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path("./checkpoints/training", "G_*.pth"), net_g, optim_g)
+    # Create new optimizer to load from checkpoint
+    optim_g = torch.optim.AdamW(
+      net_g.parameters(), 
+      hps.train.learning_rate, 
+      betas=hps.train.betas, 
+      eps=hps.train.eps)
+    optim_d = torch.optim.AdamW(
+      net_d.parameters(),
+      hps.train.learning_rate, 
+      betas=hps.train.betas, 
+      eps=hps.train.eps)
+    
+    _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path("./checkpoints/training", "G_*.pth"), net_g, optim_g) # Load optimizer as well
     _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path("./checkpoints/training", "D_*.pth"), net_d, optim_d)
     global_step = (epoch_str - 1) * len(train_loader)
   except:
     # Loading pretrained Generator model
-    utils.load_checkpoint("checkpoints/freevc.pth", net_g, optim_g, True)
-    
+    utils.load_checkpoint("checkpoints/freevc.pth", net_g, None, True) # Do not load optimizer  
     # Loading pretrained Discriminator model
-    utils.load_checkpoint("checkpoints/D-freevc.pth", net_d, optim_d, True)
+    utils.load_checkpoint("checkpoints/D-freevc.pth", net_d, None, True)
+  
+    # Create new optimizer, only loads parameters from the checkpoint
+    optim_g = torch.optim.AdamW(
+      net_g.parameters(), 
+      hps.train.learning_rate, 
+      betas=hps.train.betas, 
+      eps=hps.train.eps) 
+    optim_d = torch.optim.AdamW(
+      net_d.parameters(),
+      hps.train.learning_rate, 
+      betas=hps.train.betas, 
+      eps=hps.train.eps)
+    
     epoch_str = 1
     global_step = 0
 
-  scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
-  scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
+  # # Use old scheduler for training
+  # scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
+  # scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
+  # Use new scheduler for training
+  scheduler_g = StepLR(optim_g, step_size=25, gamma=hps.train.lr_decay)
+  scheduler_d = StepLR(optim_d, step_size=25, gamma=hps.train.lr_decay)
 
   scaler = GradScaler(enabled=hps.train.fp16_run)
 
@@ -125,8 +161,7 @@ def run(rank, n_gpus, hps):
       train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, eval_loader], logger, [writer, writer_eval])
     else:
       train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, None], None, None)
-    scheduler_g.step()
-    scheduler_d.step()
+
 
 
 def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
@@ -262,10 +297,14 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
           os.makedirs("./checkpoints/training")
         utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join("./checkpoints/training", "G_{}.pth".format(global_step)))
         utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join("./checkpoints/training", "D_{}.pth".format(global_step)))
+    
+    scheduler_g.step()
+    scheduler_d.step()
     global_step += 1
   
   if rank == 0:
     logger.info('====> Epoch: {}'.format(epoch))
+
 
  
 def evaluate(hps, generator, eval_loader, writer_eval):
