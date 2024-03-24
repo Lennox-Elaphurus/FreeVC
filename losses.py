@@ -77,10 +77,10 @@ def kl_loss(z_p, m_p, logs_p, z_mask, multi_samples = False):
     
     # Compute mean and variance along the sample dimension for each dimension separately
     mean_batch = torch.mean(z_batch, dim=0)  # Shape: [h, t_t]
-    variance_batch = torch.var(z_batch, dim=0, unbiased=False)  # Shape: [h, t_t]
+    std_batch = torch.std(z_batch, dim=0)  # Shape: [h, t_t]
     
     # Compute the standard deviation and take the logarithm
-    log_std_batch = torch.log(torch.sqrt(variance_batch))# Compute log std
+    log_std_batch = torch.log(std_batch)# Compute log std
     
     # Append mean and log std to the respective lists
     batch_means.append(mean_batch)

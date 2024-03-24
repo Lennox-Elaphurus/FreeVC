@@ -48,7 +48,7 @@ class StepLR:
         if self.total_steps % self.step_size == 0:
             # Update learning rate
             for param_group in self.optimizer.param_groups:
-                if param_group['lr'] > 1e-6:
+                if param_group['lr'] > 5e-6:
                   param_group['lr'] *= self.gamma
   
         # print("Learning rate: ", self.optimizer.param_groups[0]['lr'])
