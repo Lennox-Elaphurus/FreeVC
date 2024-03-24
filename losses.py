@@ -43,6 +43,27 @@ def generator_loss(disc_outputs):
   return loss, gen_losses
 
 
+def kl_divergence(mu_p, logvar_p, mu_q, logvar_q):
+    """
+    Calculate KL divergence between two diagonal multivariate normal distributions
+    with diagonal covariance matrices.
+    
+    Parameters:
+        mu_p (Tensor): Mean of distribution P.
+        logvar_p (Tensor): Log variance of distribution P.
+        mu_q (Tensor): Mean of distribution Q.
+        logvar_q (Tensor): Log variance of distribution Q.
+        
+    Returns:
+        Tensor: KL divergence between distribution P and Q.
+    """
+    var_p = torch.exp(logvar_p)
+    var_q = torch.exp(logvar_q)
+    
+    kl_div = 0.5 * torch.sum((var_p / var_q + (mu_q - mu_p)**2 / var_q - 1 - logvar_p + logvar_q), dim=1)
+    
+    return kl_div
+
 def kl_loss(z_p, m_p, logs_p, z_mask, multi_samples = False):
   """
   z_p: [32, b, h, t_t]
@@ -92,9 +113,10 @@ def kl_loss(z_p, m_p, logs_p, z_mask, multi_samples = False):
 
   # print("batch_means.shape",batch_means.shape)
   # print("batch_log_stds.shape",batch_log_stds.shape)
-  kl = logs_p - batch_log_stds - 0.5
-  kl += 0.5 * ((batch_means - m_p)**2) * torch.exp(-2. * logs_p)
+  # kl = logs_p - batch_log_stds - 0.5
+  # kl += 0.5 * ((batch_means - m_p)**2) * torch.exp(-2. * logs_p)
   
+  kl = kl_divergence(m_p, logs_p, batch_means, batch_log_stds)
   kl = torch.sum(kl * z_mask)
   l = kl / torch.sum(z_mask)
   return l
