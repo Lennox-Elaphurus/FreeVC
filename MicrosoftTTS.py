@@ -1,8 +1,8 @@
 import os
 import azure.cognitiveservices.speech as speechsdk
 
-SPEECH_KEY="58e51ddb823747a3b65e1c0553f94f4e"
-SPEECH_REGION="germanywestcentral"
+SPEECH_KEY=
+SPEECH_REGION=
 
 # This example requires environment variables named "SPEECH_KEY" and "SPEECH_REGION"
 speech_config1 = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
